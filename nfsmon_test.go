@@ -3,31 +3,36 @@ package nfsmon_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/glinton/nfsmon"
 )
 
+var localPath = "/tmp/nfsmon-test"
+
 func TestMain(m *testing.M) {
-	nfsmon.WatchTime = time.Second * 1
+	nfsmon.WatchFreq = time.Second * 1
 	nfsmon.RemountFunc = remountFunc
 
+	os.Create(localPath)
 	m.Run()
+	os.RemoveAll(localPath)
 }
 
 func TestWatch(t *testing.T) {
 	mount := nfsmon.Mount{
 		Server:     "192.168.0.1",
 		ServerPath: "/export/thing",
-		DestPath:   "/mnt/thing",
+		DestPath:   localPath,
 	}
 
 	// test WatchMount
 	nfsmon.WatchMount(mount)
 
 	// limit test
-	d := time.Now().Add(time.Second * 3)
+	d := time.Now().Add(time.Second * 6)
 	ctx, cancel := context.WithDeadline(context.Background(), d)
 	defer cancel()
 
@@ -38,6 +43,8 @@ func TestWatch(t *testing.T) {
 	go nfsmon.Watch(ctx)
 
 	// test remount with error
+	time.Sleep(time.Millisecond * 1100)
+	nfsmon.ErrCondition = errTrue
 	time.Sleep(time.Millisecond * 1100)
 	nfsmon.RemountFunc = remountFuncErr
 
@@ -58,4 +65,8 @@ func remountFunc(m nfsmon.Mount) error {
 
 func remountFuncErr(m nfsmon.Mount) error {
 	return fmt.Errorf("triggerred failure")
+}
+
+func errTrue(err error) bool {
+	return true
 }
