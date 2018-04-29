@@ -1,0 +1,11 @@
+language: go
+
+dist: trusty
+
+go: "1.10"
+
+install:
+  - go get ./...
+
+script: 
+  - go test -v -cover -race

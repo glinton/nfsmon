@@ -13,8 +13,7 @@ import (
 var localPath = "/tmp/nfsmon-test"
 
 func TestMain(m *testing.M) {
-	nfsmon.WatchFreq = time.Second * 1
-	nfsmon.RemountFunc = remountFunc
+	nfsmon.SetRemountFunc(remountFunc)
 
 	os.Create(localPath)
 	m.Run()
@@ -30,6 +29,7 @@ func TestWatch(t *testing.T) {
 
 	// test WatchMount
 	nfsmon.WatchMount(mount)
+	nfsmon.WatchMount(mount)
 
 	// limit test
 	d := time.Now().Add(time.Second * 6)
@@ -37,16 +37,16 @@ func TestWatch(t *testing.T) {
 	defer cancel()
 
 	// test remount no error
-	nfsmon.RemountFunc = remountFunc
+	nfsmon.SetRemountFunc(remountFunc)
 
 	// start watcher
-	go nfsmon.Watch(ctx)
+	go nfsmon.Watch(ctx, func(c *nfsmon.WatchCfg) { c.WatchFreq = time.Second })
 
 	// test remount with error
 	time.Sleep(time.Millisecond * 1100)
-	nfsmon.ErrCondition = errTrue
+	nfsmon.SetErrConditionFunc(errTrue)
 	time.Sleep(time.Millisecond * 1100)
-	nfsmon.RemountFunc = remountFuncErr
+	nfsmon.SetRemountFunc(remountFuncErr)
 
 	// test UnwatchMount
 	<-ctx.Done()
@@ -69,4 +69,11 @@ func remountFuncErr(m nfsmon.Mount) error {
 
 func errTrue(err error) bool {
 	return true
+}
+
+// This example demonstrates the use of a functional option to set how
+// frequently to check for a stale mount.
+func ExampleWatch() {
+	ctx := context.Background()
+	nfsmon.Watch(ctx, func(c *nfsmon.WatchCfg) { c.WatchFreq = time.Second })
 }

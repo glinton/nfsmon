@@ -1,5 +1,5 @@
 // Package nfsmon provides simple monitoring for nfs mounts. When a stale mount
-// is detected, the RemountFunc is called.
+// is detected, the remountFunc is called.
 package nfsmon
 
 import (
@@ -21,24 +21,37 @@ type (
 )
 
 var (
-	// RemountFuc gets called when a mount is detected as having gone stale.
-	RemountFunc func(m Mount) error
-	// WatchFreq defines how frequently to check mount destination path.
-	WatchFreq = time.Second * 30
+	// remountFunc gets called when a mount is detected as having gone stale.
+	remountFunc    func(m Mount) error
+	remountFuncTex = &sync.RWMutex{}
+
+	// errCondition is checked by Watch. If true, Watch calls remountFunc. Default returns
+	// true if stale nfs mount detected.
+	errCondition    func(error) bool
+	errConditionTex = &sync.RWMutex{}
+
 	// mounts define which mounts to watch.
 	mounts = []Mount{}
-	// mTex	is the mounts' mutual exclusive lock.
-	mTex = sync.RWMutex{}
+	mTex   = &sync.RWMutex{}
 )
 
 // WatchMount adds a mount to the list of mounts to watch.
-// func WatchMount(m Remounter) {
 func WatchMount(m Mount) {
+	mTex.Lock()
+	defer mTex.Unlock()
+	for i := range mounts {
+		if mounts[i].DestPath == m.DestPath {
+			mounts[i] = m
+			return
+		}
+	}
 	mounts = append(mounts, m)
 }
 
 // UnwatchMount removes a mount from the list of mounts to watch.
 func UnwatchMount(m Mount) {
+	mTex.Lock()
+	defer mTex.Unlock()
 	for i := range mounts {
 		if mounts[i].DestPath == m.DestPath {
 			mounts = append(mounts[:i], mounts[i+1:]...)
@@ -47,20 +60,69 @@ func UnwatchMount(m Mount) {
 	}
 }
 
-// ErrCondition is checked by Watch. If true, Watch calls RemountFunc. Default returns
-// true if stale nfs mount detected.
-var ErrCondition func(error) bool = errConditionFunc
+// SetErrConditionFunc sets the errCondition function in a threadsafe manner.
+// The "errCondition" function is checked by Watch. If true, it calls remountFunc.
+// Default returns true if stale nfs mount detected.
+func SetErrConditionFunc(f func(error) bool) {
+	errConditionTex.Lock()
+	defer errConditionTex.Unlock()
+	errCondition = f
+}
+
+// getErrConditionFunc gets the configured or default error condition function.
+func getErrConditionFunc() func(error) bool {
+	errConditionTex.RLock()
+	defer errConditionTex.RUnlock()
+	if errCondition == nil {
+		return errConditionFunc
+	}
+	return errCondition
+}
+
+// SetRemountFunc sets the remount function in a threadsafe manner.
+func SetRemountFunc(f func(Mount) error) {
+	remountFuncTex.Lock()
+	defer remountFuncTex.Unlock()
+	remountFunc = f
+}
+
+// getRemountFunc gets the configured remount function.
+func getRemountFunc() func(Mount) error {
+	remountFuncTex.RLock()
+	defer remountFuncTex.RUnlock()
+	return remountFunc
+}
 
 // errConditionFunc is the default error condition to check for; a stale nfs mount.
 func errConditionFunc(err error) bool {
 	return err == syscall.ESTALE && strings.Contains(err.Error(), "NFS")
 }
 
-// Watch watches the configured mounts and calls RemountFunc if ErrCondition is true.
-func Watch(ctx context.Context) {
+// WatchCfg allows for configuring the watch function.
+type WatchCfg struct {
+	// NumRetries defines how many times to retry mounting.
+	NumRetries int
+	// WatchFreq defines how frequently to check mount destination path.
+	WatchFreq time.Duration
+	// todo: add RemountBackoff - time to sleep before retrying the mount
+}
+
+// Watch watches the configured mountsand calls remountFunc if errCondition is true.
+// Configured via functional options. For default config, run with Watch(ctx).
+func Watch(ctx context.Context, opts ...func(*WatchCfg)) {
+	cfg := WatchCfg{
+		NumRetries: 3,
+		WatchFreq:  time.Second * 30,
+	}
+
+	// set config options (functional parameters)
+	for i := range opts {
+		opts[i](&cfg)
+	}
+
 	for {
 		select {
-		case <-time.Tick(WatchFreq):
+		case <-time.Tick(cfg.WatchFreq):
 			mTex.RLock()
 			tMounts := mounts
 			mTex.RUnlock()
@@ -68,14 +130,17 @@ func Watch(ctx context.Context) {
 			for i := range tMounts {
 				err := syscall.Statfs(tMounts[i].DestPath, nil)
 				if err != nil {
-					if ErrCondition(err) {
+					if getErrConditionFunc()(err) {
 						retry := 0
 					remount:
-						// todo: add timeout
-						err := RemountFunc(tMounts[i])
+						if getRemountFunc() == nil {
+							continue
+						}
+						// consumers can add timeout in remount func
+						err := getRemountFunc()(tMounts[i])
 						if err != nil {
 							retry++
-							if retry < 3 {
+							if retry < cfg.NumRetries {
 								time.Sleep(time.Second)
 								goto remount
 							}
