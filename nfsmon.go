@@ -4,7 +4,6 @@ package nfsmon
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -13,10 +12,12 @@ import (
 type (
 	// Mount defines a mount to watch.
 	Mount struct {
-		Server     string // Server defines the server mounted from.
-		ServerPath string // ServerPath defines the location of the mount on the server.
-		DestPath   string // DestPath defines the path to mount/monitor.
-		MountOpts  string // MountOpts defines the mount options to use when mounting.
+		Server     string      // Server defines the server mounted from.
+		ServerPath string      // ServerPath defines the location of the mount on the server.
+		DestPath   string      // DestPath defines the path to mount/monitor.
+		MountOpts  string      // MountOpts defines the mount options to use when mounting.
+		ExtraData  interface{} // ExtraData contains extra data relevant to the remount function.
+		// todo: maybe instead of ExtraData, define a remountFunc per mount.
 	}
 )
 
@@ -95,7 +96,7 @@ func getRemountFunc() func(Mount) error {
 
 // errConditionFunc is the default error condition to check for; a stale nfs mount.
 func errConditionFunc(err error) bool {
-	return err == syscall.ESTALE && strings.Contains(err.Error(), "NFS")
+	return err == syscall.ESTALE
 }
 
 // WatchCfg allows for configuring the watch function.
@@ -128,7 +129,8 @@ func Watch(ctx context.Context, opts ...func(*WatchCfg)) {
 			mTex.RUnlock()
 
 			for i := range tMounts {
-				err := syscall.Statfs(tMounts[i].DestPath, nil)
+				buf := syscall.Statfs_t{}
+				err := syscall.Statfs(tMounts[i].DestPath, &buf)
 				if err != nil {
 					if getErrConditionFunc()(err) {
 						retry := 0
